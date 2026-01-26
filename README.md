@@ -8,6 +8,9 @@ Train a computer vision model to predict an album’s release decade from its co
 - Stratified train/val/test splits by decade
 - Outputs: trained model, training logs, classification report, confusion matrix
 
+## Dataset
+`get_album_art.py` builds a labeled album-cover dataset by querying a local MusicBrainz PostgreSQL mirror (see the [MusicBrainz Docker mirror project](https://github.com/metabrainz/musicbrainz-docker)). For the five genres rock, pop, jazz, classical, and electronic, it produced 160,000+ cover images labeled by genre and decade (based on first release year).
+
 ## Dataset format
 
 Expected folder layout:
