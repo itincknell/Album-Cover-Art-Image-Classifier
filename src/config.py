@@ -13,7 +13,6 @@ from pathlib import Path
 @dataclass
 class DataConfig:
     data_root: Path
-    genre: str
     min_examples_per_decade: int = 2500
     test_size: float = 0.25
     val_size: float = 0.20
@@ -33,3 +32,25 @@ class TrainingConfig:
     dropout: float = 0.5
     dense_units: int = 1024
     fine_tune_last_n: int = 10
+
+    backbone: str = "densenet201"
+
+
+@dataclass
+class CallbackConfig:
+    # EarlyStopping (stage-specific)
+    stage1_es_patience: int = 8
+    stage1_es_min_delta: float = 0.005
+    stage2_es_patience: int = 8
+    stage2_es_min_delta: float = 0.005
+
+    # ReduceLROnPlateau (stage-specific)
+    stage1_rlr_patience: int = 4
+    stage1_rlr_min_delta: float = 0.005
+    stage1_rlr_factor: float = 0.2
+    stage1_rlr_min_lr: float = 1e-6
+
+    stage2_rlr_patience: int = 4
+    stage2_rlr_min_delta: float = 0.005
+    stage2_rlr_factor: float = 0.2
+    stage2_rlr_min_lr: float = 1e-6

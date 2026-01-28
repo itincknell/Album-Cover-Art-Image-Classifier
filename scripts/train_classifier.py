@@ -34,13 +34,15 @@ outputs/
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
-import os
+import re
+from dataclasses import asdict
 import sys
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, Any, List
+from typing import Dict
 
 import numpy as np
 import pandas as pd
@@ -48,24 +50,19 @@ import pandas as pd
 import tensorflow as tf
 from tensorflow.keras.callbacks import ModelCheckpoint, EarlyStopping, ReduceLROnPlateau
 
-from sklearn.metrics import classification_report, confusion_matrix
-
-import matplotlib.pyplot as plt
-import seaborn as sns
-
 # Make src/ importable when running from scripts/
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_DIR = REPO_ROOT / "src"
 sys.path.insert(0, str(SRC_DIR))
 
-from config import DataConfig, TrainingConfig
+from config import DataConfig, TrainingConfig, CallbackConfig
 from data import (
     SUPPORTED_GENRES,
     load_and_prepare_multi_genre,
     make_splits,
 )
 from dataset import make_dataset
-from model import build_densenet_classifier, compile_model
+from model import build_model, compile_model
 from eval import evaluate_and_save
 
 def _utc_now_iso() -> str:
@@ -95,9 +92,8 @@ def _ensure_dirs(out_root: Path) -> Dict[str, Path]:
     return {"models": models_dir, "logs": logs_dir, "metrics": metrics_dir}
 
 
-def _save_run_metadata(path: Path, meta: Dict[str, Any]) -> None:
-    path.write_text(json.dumps(meta, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-
+# parse_args + main with only the requested callback args (stage-specific)
+# (backbone args included as before)
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train album-cover classifier (DenseNet201).")
@@ -115,18 +111,20 @@ def parse_args() -> argparse.Namespace:
         default=str(REPO_ROOT / "data"),
         help="Path to dataset root directory (contains CSVs + image subfolders).",
     )
-    parser.add_argument(
-        "--genre",
-        type=str,
-        default="rock",
-        help="For task=decade: one genre or 'all'. Ignored for task=genre.",
-    )
 
     # Data split / filtering
     parser.add_argument("--min_examples_per_decade", type=int, default=2500)
     parser.add_argument("--test_size", type=float, default=0.25)
     parser.add_argument("--val_size", type=float, default=0.20)
     parser.add_argument("--seed", type=int, default=42)
+
+    # Backbone
+    parser.add_argument(
+        "--backbone",
+        type=str,
+        default="densenet201",
+        help="Backbone key from BACKBONES (e.g., densenet201, resnet50, vgg16, efficientnetb0).",
+    )
 
     # Training hyperparams
     parser.add_argument("--image_size", type=int, default=250)
@@ -141,13 +139,45 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dense_units", type=int, default=1024)
     parser.add_argument("--l2_strength", type=float, default=0.0)
 
+    # Callbacks (stage-specific, minimal surface)
+    # EarlyStopping
+    parser.add_argument("--stage1_es_patience", type=int, default=8)
+    parser.add_argument("--stage1_es_min_delta", type=float, default=0.005)
+    parser.add_argument("--stage2_es_patience", type=int, default=8)
+    parser.add_argument("--stage2_es_min_delta", type=float, default=0.005)
+
+    # ReduceLROnPlateau
+    parser.add_argument("--stage1_rlr_patience", type=int, default=4)
+    parser.add_argument("--stage1_rlr_min_delta", type=float, default=0.005)
+    parser.add_argument("--stage1_rlr_factor", type=float, default=0.2)
+    parser.add_argument("--stage1_rlr_min_lr", type=float, default=1e-6)
+
+    parser.add_argument("--stage2_rlr_patience", type=int, default=4)
+    parser.add_argument("--stage2_rlr_min_delta", type=float, default=0.005)
+    parser.add_argument("--stage2_rlr_factor", type=float, default=0.2)
+    parser.add_argument("--stage2_rlr_min_lr", type=float, default=1e-6)
+
     # Output
     parser.add_argument("--out_root", type=str, default=str(REPO_ROOT / "outputs"))
 
     return parser.parse_args()
 
 
-def run_one(cfg_data: DataConfig, cfg_train: TrainingConfig, task: str, out_root: Path) -> None:
+def make_run_tag(backbone: str, task: str, cfg_data, cfg_train, cfg_cb, n: int = 8) -> str:
+    """<backbone>_<task>_<short-hash> where hash is over the 3 config dataclasses."""
+    payload = {
+        "data": asdict(cfg_data),
+        "train": asdict(cfg_train),
+        "callbacks": asdict(cfg_cb),
+    }
+    blob = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    h = hashlib.sha256(blob).hexdigest()[:n]
+
+    prefix = re.sub(r"[^a-z0-9._-]+", "-", f"{backbone}_{task}".lower()).strip("-")
+    return f"{prefix}_{h}"
+
+
+def run_one(cfg_data: DataConfig, cfg_train: TrainingConfig, cfg_cb: CallbackConfig, task: str, out_root: Path) -> None:
     np.random.seed(cfg_data.random_seed)
     tf.random.set_seed(cfg_data.random_seed)
 
@@ -174,9 +204,9 @@ def run_one(cfg_data: DataConfig, cfg_train: TrainingConfig, task: str, out_root
     # -------------------------
     # Build model
     # -------------------------
-    model_tag = f"DenseNet201_{task}_DecadeClassifier"
+    model_tag = make_run_tag(cfg_train.backbone, task, cfg_data, cfg_train, cfg_cb)
     output_name = task  # keep output name aligned with task
-    model, base_model = build_densenet_classifier(
+    model, base_model = build_model(
         num_classes=len(class_names),
         cfg=cfg_train,
         output_name=output_name,
@@ -225,17 +255,39 @@ def run_one(cfg_data: DataConfig, cfg_train: TrainingConfig, task: str, out_root
 
     callbacks_stage1 = [
         ModelCheckpoint(str(ckpt_stage1), monitor="val_loss", save_best_only=True, mode="min"),
-        EarlyStopping(monitor="val_loss", patience=8, min_delta=0.005, restore_best_weights=True),
+        EarlyStopping(
+            monitor="val_loss",
+            patience=cfg_cb.stage1_es_patience,
+            min_delta=cfg_cb.stage1_es_min_delta,
+            restore_best_weights=True,
+            verbose=0,
+        ),
         ReduceLROnPlateau(
-            monitor="val_loss", factor=0.2, patience=4, min_delta=0.005, min_lr=1e-6, verbose=1
+            monitor="val_loss",
+            factor=cfg_cb.stage1_rlr_factor,
+            patience=cfg_cb.stage1_rlr_patience,
+            min_delta=cfg_cb.stage1_rlr_min_delta,
+            min_lr=cfg_cb.stage1_rlr_min_lr,
+            verbose=1,
         ),
     ]
 
     callbacks_stage2 = [
         ModelCheckpoint(str(ckpt_stage2), monitor="val_loss", save_best_only=True, mode="min"),
-        EarlyStopping(monitor="val_loss", patience=8, min_delta=0.005, restore_best_weights=True),
+        EarlyStopping(
+            monitor="val_loss",
+            patience=cfg_cb.stage2_es_patience,
+            min_delta=cfg_cb.stage2_es_min_delta,
+            restore_best_weights=True,
+            verbose=0,
+        ),
         ReduceLROnPlateau(
-            monitor="val_loss", factor=0.2, patience=4, min_delta=0.005, min_lr=1e-6, verbose=1
+            monitor="val_loss",
+            factor=cfg_cb.stage2_rlr_factor,
+            patience=cfg_cb.stage2_rlr_patience,
+            min_delta=cfg_cb.stage2_rlr_min_delta,
+            min_lr=cfg_cb.stage2_rlr_min_lr,
+            verbose=1,
         ),
     ]
 
@@ -286,7 +338,7 @@ def run_one(cfg_data: DataConfig, cfg_train: TrainingConfig, task: str, out_root
     model.save(final_model_path)
     print(f"\n[{model_tag}] Saved model: {final_model_path}")
 
-   # -------------------------
+    # -------------------------
     # Evaluation
     # -------------------------
     print(f"\n[{model_tag}] Evaluating on test set")
@@ -311,7 +363,6 @@ def run_one(cfg_data: DataConfig, cfg_train: TrainingConfig, task: str, out_root
         class_names=class_names,
         metrics_dir=dirs["metrics"],
         tag=model_tag,
-        task_name=task,
         meta=run_meta,
     )
 
@@ -347,9 +398,25 @@ def main() -> None:
         dense_units=args.dense_units,
         fine_tune_last_n=args.fine_tune_last_n,
         l2_strength=args.l2_strength,
+        backbone=args.backbone,
     )
 
-    run_one(cfg_data, cfg_train, task=task, out_root=out_root)
+    cfg_cb = CallbackConfig(
+        stage1_es_patience=args.stage1_es_patience,
+        stage1_es_min_delta=args.stage1_es_min_delta,
+        stage2_es_patience=args.stage2_es_patience,
+        stage2_es_min_delta=args.stage2_es_min_delta,
+        stage1_rlr_patience=args.stage1_rlr_patience,
+        stage1_rlr_min_delta=args.stage1_rlr_min_delta,
+        stage1_rlr_factor=args.stage1_rlr_factor,
+        stage1_rlr_min_lr=args.stage1_rlr_min_lr,
+        stage2_rlr_patience=args.stage2_rlr_patience,
+        stage2_rlr_min_delta=args.stage2_rlr_min_delta,
+        stage2_rlr_factor=args.stage2_rlr_factor,
+        stage2_rlr_min_lr=args.stage2_rlr_min_lr,
+    )
+
+    run_one(cfg_data, cfg_train, cfg_cb, task=task, out_root=out_root)
 
 
 if __name__ == "__main__":

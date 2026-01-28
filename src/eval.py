@@ -135,7 +135,6 @@ def evaluate_and_save(
     class_names: List[str],
     metrics_dir: Path,
     tag: str,
-    task_name: str,
     meta,
 ) -> None:
     """
@@ -143,8 +142,6 @@ def evaluate_and_save(
     - classification_report.csv
     - confusion_matrix.png + .csv
     - summary.json
-
-    `task_name` is used only for plot title clarity (e.g., "Genre", "Decade").
     """
     metrics_dir.mkdir(parents=True, exist_ok=True)
 
@@ -169,7 +166,7 @@ def evaluate_and_save(
         y_pred_int=y_pred_int,
         class_names=class_names,
         out_png=cm_png,
-        title=f"Confusion Matrix - {task_name} ({tag})",
+        title=f"Confusion Matrix - ({tag})",
         normalize=None,
     )
 

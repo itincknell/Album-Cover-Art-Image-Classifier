@@ -21,7 +21,6 @@ def build_model(
     num_classes: int,
     cfg: TrainingConfig,
     task_name: str,
-    backbone_name: str = "densenet201",
 ) -> Tuple[Model, tf.keras.Model]:
     """
     Create an ImageNet-pretrained backbone + single-label softmax head.
@@ -36,10 +35,10 @@ def build_model(
         model      : full classification model
         base_model : the pretrained feature extractor (for fine-tuning control)
     """
-    if backbone_name not in BACKBONES:
-        raise ValueError(f"Unknown backbone '{backbone_name}'. Expected one of: {sorted(BACKBONES.keys())}")
+    if cfg.backbone not in BACKBONES:
+        raise ValueError(f"Unknown backbone '{cfg.backbone}'. Expected one of: {sorted(BACKBONES.keys())}")
 
-    spec = BACKBONES[backbone_name]
+    spec = BACKBONES[cfg.backbone]
 
     inputs = Input(shape=(cfg.image_size, cfg.image_size, 3), name="image")
 
@@ -69,6 +68,6 @@ def build_model(
     model = Model(
         inputs=inputs,
         outputs=outputs,
-        name=f"{backbone_name}_{task_name.capitalize()}Classifier",
+        name=f"{cfg.backbone}_{task_name.capitalize()}_Classifier",
     )
     return model, base_model
