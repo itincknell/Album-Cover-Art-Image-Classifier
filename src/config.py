@@ -33,7 +33,18 @@ class TrainingConfig:
     dense_units: int = 1024
     fine_tune_last_n: int = 10
 
+    l2_reg: float = 0
+
     backbone: str = "densenet201"
+
+    # Optional caps (None = full epoch / full validation)
+    steps_per_epoch: int | None = None
+    validation_steps: int | None = None
+
+    # tf.data options
+    cache: bool = False                  # cache after decode/resize
+    repeat: bool = False                 # repeat training dataset indefinitely
+    cache_path: str | None = None        # optional explicit cache file (overrides cache_in_memory)
 
 
 @dataclass

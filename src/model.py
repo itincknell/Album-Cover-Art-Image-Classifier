@@ -17,10 +17,26 @@ from config import TrainingConfig
 from backbones import BACKBONES
 
 
+def compile_model(model: Model, lr: float) -> None:
+    """
+    Compile a single-output softmax classifier model.
+
+    Assumes:
+      - model output is shape (batch, num_classes) with softmax
+      - labels are one-hot
+    """
+    model.compile(
+        optimizer=tf.keras.optimizers.Adam(learning_rate=lr),
+        loss="categorical_crossentropy",
+        metrics=["accuracy"],
+    )
+
+
 def build_model(
     num_classes: int,
     cfg: TrainingConfig,
     task_name: str,
+    model_name: str,
 ) -> Tuple[Model, tf.keras.Model]:
     """
     Create an ImageNet-pretrained backbone + single-label softmax head.
@@ -68,6 +84,6 @@ def build_model(
     model = Model(
         inputs=inputs,
         outputs=outputs,
-        name=f"{cfg.backbone}_{task_name.capitalize()}_Classifier",
+        name=model_name,
     )
     return model, base_model

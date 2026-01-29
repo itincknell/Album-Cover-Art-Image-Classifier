@@ -51,12 +51,8 @@ DROP_COLS_IF_PRESENT = [
     "release_year",
 ]
 
+
 def _resolve_image_path(data_root: Path, genre: str, image_file: str) -> str:
-    """
-    Resolve image paths:
-    - absolute path: use as-is
-    - relative path: prefer data_root/<image_file> if it exists, else data_root/<genre>/<image_file>
-    """
     p = Path(str(image_file))
 
     if p.is_absolute():
@@ -70,7 +66,7 @@ def _resolve_image_path(data_root: Path, genre: str, image_file: str) -> str:
     return str(candidate2)
 
 
-def load_and_prepare_dataframe(cfg: DataConfig) -> pd.DataFrame:
+def load_and_prepare_dataframe(cfg: DataConfig, genre) -> pd.DataFrame:
     """
     Load one genre CSV, normalize schema, drop unused columns (if present),
     validate image paths, and return a clean DataFrame.
@@ -80,17 +76,11 @@ def load_and_prepare_dataframe(cfg: DataConfig) -> pd.DataFrame:
         decade     (string label)
         genre      (string)
     """
-    csv_path = cfg.data_root / f"{cfg.genre}_df.csv"
+    csv_path = cfg.data_root / f"{genre}_df.csv"
     if not csv_path.exists():
         raise FileNotFoundError(f"Missing CSV: {csv_path}")
 
     df = pd.read_csv(csv_path)
-
-    # Normalize the genre column name (some datasets store as 'genre_name')
-    if "genre_name" in df.columns and "genre" not in df.columns:
-        df = df.rename(columns={"genre_name": "genre"})
-    elif "genre" not in df.columns:
-        df["genre"] = cfg.genre
 
     # Drop columns that are irrelevant for training (if present)
     cols_to_drop = [c for c in DROP_COLS_IF_PRESENT if c in df.columns]
@@ -107,7 +97,7 @@ def load_and_prepare_dataframe(cfg: DataConfig) -> pd.DataFrame:
     df = df.drop_duplicates(subset="image_file")
 
     # Construct absolute image paths + validate existence
-    df["image_path"] = df["image_file"].apply(lambda x: _resolve_image_path(cfg.data_root, cfg.genre, x))
+    df["image_path"] = df["image_file"].apply(lambda x: _resolve_image_path(cfg.data_root, genre, x))
     exists_mask = df["image_path"].apply(lambda p: os.path.exists(p))
     df = df[exists_mask].copy()
 
@@ -124,8 +114,7 @@ def load_and_prepare_multi_genre(cfg: DataConfig, genres: List[str]) -> pd.DataF
     """
     dfs = []
     for g in genres:
-        g_cfg = DataConfig(**{**cfg.__dict__, "genre": g})
-        dfs.append(load_and_prepare_dataframe(g_cfg))
+        dfs.append(load_and_prepare_dataframe(cfg, g))
 
     if not dfs:
         raise ValueError("No genres provided")

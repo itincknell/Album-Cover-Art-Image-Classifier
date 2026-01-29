@@ -61,4 +61,10 @@ BACKBONES: Dict[str, BackboneSpec] = {
         ctor=tf.keras.applications.EfficientNetB0,
         preprocess_input=_scale_255(tf.keras.applications.efficientnet.preprocess_input),
     ),
+
+    # MobileNetV3Small (good for test runs)
+    "mobilenetv3small": BackboneSpec(
+        ctor=tf.keras.applications.MobileNetV3Small,
+        preprocess_input=_scale_255(tf.keras.applications.mobilenet_v3.preprocess_input),
+    ),
 }

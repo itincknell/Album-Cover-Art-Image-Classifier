@@ -42,7 +42,7 @@ import sys
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Optional
 
 import numpy as np
 import pandas as pd
@@ -64,6 +64,45 @@ from data import (
 from dataset import make_dataset
 from model import build_model, compile_model
 from eval import evaluate_and_save
+
+
+def _configure_accelerators(set_memory_growth: bool) -> None:
+    """
+    Print visible GPUs and (optionally) enable memory growth for each GPU.
+    Safe no-op if no GPUs are present.
+    """
+    gpus = tf.config.list_physical_devices("GPU")
+    if not gpus:
+        print("[tf] Visible GPUs: none")
+        return
+
+    print("[tf] Visible GPUs:")
+    for i, gpu in enumerate(gpus):
+        print(f"  - GPU {i}: {gpu}")
+
+    if set_memory_growth:
+        for gpu in gpus:
+            try:
+                tf.config.experimental.set_memory_growth(gpu, True)
+            except Exception as e:
+                print(f"[tf] WARNING: could not set memory growth for {gpu}: {e}")
+
+
+def _maybe_enable_mixed_precision(enabled: bool) -> None:
+    """
+    Enable mixed precision (float16 compute) when supported by the runtime/GPU.
+    On CPU-only runs this usually provides no benefit and can hurt performance.
+    """
+    if not enabled:
+        return
+
+    try:
+        from tensorflow.keras import mixed_precision
+        mixed_precision.set_global_policy("mixed_float16")
+        print(f"[tf] Mixed precision enabled: {mixed_precision.global_policy()}")
+    except Exception as e:
+        print(f"[tf] WARNING: failed to enable mixed precision: {e}")
+
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -113,10 +152,16 @@ def parse_args() -> argparse.Namespace:
     )
 
     # Data split / filtering
-    parser.add_argument("--min_examples_per_decade", type=int, default=2500)
+    parser.add_argument("--min_examples_per_decade", type=int, default=0)
     parser.add_argument("--test_size", type=float, default=0.25)
     parser.add_argument("--val_size", type=float, default=0.20)
     parser.add_argument("--seed", type=int, default=42)
+
+    # tf.data options
+    parser.add_argument("--cache", action="store_true", help="Enable ds.cache() after preprocessing.")
+    parser.add_argument("--cache_to_disk", action="store_true", help="Cache to disk instead of RAM.")
+    parser.add_argument("--cache_path", type=str, default=None, help="Optional cache file path.")
+    parser.add_argument("--repeat", action="store_true", help="Repeat the training dataset indefinitely.")
 
     # Backbone
     parser.add_argument(
@@ -137,7 +182,7 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument("--dropout", type=float, default=0.5)
     parser.add_argument("--dense_units", type=int, default=1024)
-    parser.add_argument("--l2_strength", type=float, default=0.0)
+    parser.add_argument("--l2_reg", type=float, default=0.0)
 
     # Callbacks (stage-specific, minimal surface)
     # EarlyStopping
@@ -157,6 +202,32 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--stage2_rlr_factor", type=float, default=0.2)
     parser.add_argument("--stage2_rlr_min_lr", type=float, default=1e-6)
 
+    # Fit-loop shortening / control
+    parser.add_argument(
+        "--steps_per_epoch",
+        type=int,
+        default=None,
+        help="Optional cap on training steps per epoch (None = full epoch).",
+    )
+    parser.add_argument(
+        "--validation_steps",
+        type=int,
+        default=None,
+        help="Optional cap on validation steps (None = full validation).",
+    )
+
+    # Runtime / accelerator options
+    parser.add_argument(
+        "--set_memory_growth",
+        action="store_true",
+        help="If GPUs are present, enable TF memory growth.",
+    )
+    parser.add_argument(
+        "--mixed_precision",
+        action="store_true",
+        help="Enable mixed precision (mixed_float16) when supported.",
+    )
+
     # Output
     parser.add_argument("--out_root", type=str, default=str(REPO_ROOT / "outputs"))
 
@@ -170,6 +241,7 @@ def make_run_tag(backbone: str, task: str, cfg_data, cfg_train, cfg_cb, n: int =
         "train": asdict(cfg_train),
         "callbacks": asdict(cfg_cb),
     }
+    payload["data"].pop("data_root", None) # PosixPath not JSON serializable
     blob = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     h = hashlib.sha256(blob).hexdigest()[:n]
 
@@ -205,11 +277,10 @@ def run_one(cfg_data: DataConfig, cfg_train: TrainingConfig, cfg_cb: CallbackCon
     # Build model
     # -------------------------
     model_tag = make_run_tag(cfg_train.backbone, task, cfg_data, cfg_train, cfg_cb)
-    output_name = task  # keep output name aligned with task
     model, base_model = build_model(
         num_classes=len(class_names),
         cfg=cfg_train,
-        output_name=output_name,
+        task_name=task,
         model_name=model_tag,
     )
 
@@ -238,7 +309,7 @@ def run_one(cfg_data: DataConfig, cfg_train: TrainingConfig, cfg_cb: CallbackCon
             "fine_tune_last_n": cfg_train.fine_tune_last_n,
             "dropout": cfg_train.dropout,
             "dense_units": cfg_train.dense_units,
-            "l2_strength": cfg_train.l2_strength,
+            "l2_reg": cfg_train.l2_reg,
         },
         "env": {
             "python": sys.version.split()[0],
@@ -301,6 +372,8 @@ def run_one(cfg_data: DataConfig, cfg_train: TrainingConfig, cfg_cb: CallbackCon
         train_ds,
         validation_data=val_ds,
         epochs=cfg_train.stage1_epochs,
+        steps_per_epoch=cfg_train.steps_per_epoch,
+        validation_steps=cfg_train.validation_steps,
         callbacks=callbacks_stage1,
         verbose=1,
     )
@@ -323,6 +396,8 @@ def run_one(cfg_data: DataConfig, cfg_train: TrainingConfig, cfg_cb: CallbackCon
         train_ds,
         validation_data=val_ds,
         epochs=cfg_train.stage2_epochs,
+        steps_per_epoch=cfg_train.steps_per_epoch,
+        validation_steps=cfg_train.validation_steps,
         callbacks=callbacks_stage2,
         verbose=1,
     )
@@ -372,6 +447,9 @@ def run_one(cfg_data: DataConfig, cfg_train: TrainingConfig, cfg_cb: CallbackCon
 def main() -> None:
     args = parse_args()
 
+    _configure_accelerators(set_memory_growth=args.set_memory_growth)
+    _maybe_enable_mixed_precision(enabled=args.mixed_precision)
+
     data_root = Path(args.data_root)
     if not data_root.exists():
         raise FileNotFoundError(f"--data_root does not exist: {data_root}")
@@ -397,8 +475,13 @@ def main() -> None:
         dropout=args.dropout,
         dense_units=args.dense_units,
         fine_tune_last_n=args.fine_tune_last_n,
-        l2_strength=args.l2_strength,
+        l2_reg=args.l2_reg,
         backbone=args.backbone,
+        steps_per_epoch=args.steps_per_epoch,
+        validation_steps=args.validation_steps,    
+        cache=args.cache,
+        repeat=args.repeat,
+        cache_path=args.cache_path,
     )
 
     cfg_cb = CallbackConfig(
@@ -415,6 +498,9 @@ def main() -> None:
         stage2_rlr_factor=args.stage2_rlr_factor,
         stage2_rlr_min_lr=args.stage2_rlr_min_lr,
     )
+
+    if cfg_train.repeat and cfg_train.steps_per_epoch is None:
+        raise ValueError("--repeat requires --steps_per_epoch (otherwise epochs never terminate).")
 
     run_one(cfg_data, cfg_train, cfg_cb, task=task, out_root=out_root)
 
