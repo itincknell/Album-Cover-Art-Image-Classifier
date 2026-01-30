@@ -10,7 +10,7 @@ Tasks
 - genre : predict genre 
 
 Repo layout
----------------------
+----------------------
 repo_root/
   src/
     config.py

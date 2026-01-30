@@ -28,4 +28,5 @@ VAL_STEPS="${VAL_STEPS:-10}"
   --stage1_epochs "${STAGE1_EPOCHS}" \
   --stage2_epochs "${STAGE2_EPOCHS}" \
   --steps_per_epoch "${STEPS_PER_EPOCH}" \
-  --validation_steps "${VAL_STEPS}"
+  --validation_steps "${VAL_STEPS}" \
+  --repeat

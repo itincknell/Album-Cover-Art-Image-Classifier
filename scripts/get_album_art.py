@@ -38,7 +38,7 @@ from multiprocessing import Value
 # -------
 # - <cwd>/<genre>/...jpg            downloaded images
 # - <cwd>/<genre>_df.csv            metadata + image filename + decade label
-# -----------------------------------------------------------------------------
+# ----------------------------------------------------------------------------
 
 # Function to download images
 def download_image(url, save_path):

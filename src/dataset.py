@@ -57,15 +57,11 @@ def make_dataset(
     )
 
     if cfg.cache:
-        # tf.data semantics:
-        # - cache()           => in-memory cache
-        # - cache("path")     => on-disk cache at that path
+        # If path specified, cache to disk
         if cfg.cache_path is None:
             ds = ds.cache()
         else:
             ds = ds.cache(cfg.cache_path)
-
-    ds = ds.ignore_errors() # avoid crashing on corrupt images, etc.
 
     ds = ds.batch(cfg.batch_size)
     ds = ds.prefetch(tf.data.AUTOTUNE)
