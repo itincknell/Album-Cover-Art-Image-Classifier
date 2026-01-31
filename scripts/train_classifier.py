@@ -67,9 +67,6 @@ def _enable_mixed_precision(enabled: bool) -> None:
         print(f"[tf] WARNING: failed to enable mixed precision: {e}")
 
 
-# parse_args + main with only the requested callback args (stage-specific)
-# (backbone args included as before)
-
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train album-cover classifier (DenseNet201).")
 
