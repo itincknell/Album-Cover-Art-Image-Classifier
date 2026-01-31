@@ -12,6 +12,7 @@ src/
   dataset.py
   model.py
   eval.py
+  run_model.py
 scripts/
   get_album_art.py
   train_classifier.py
